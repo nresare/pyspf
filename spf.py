@@ -100,6 +100,7 @@ import sys
 import socket  # for inet_ntoa() and inet_aton()
 import struct  # for pack() and unpack()
 import time    # for time()
+import dns
 try:
     import urllib.parse as urllibparse # for quote()
 except:
@@ -122,43 +123,28 @@ except ImportError:
     except ImportError:
         print('ipaddr module required: http://code.google.com/p/ipaddr-py/')
 
-import DNS    # http://pydns.sourceforge.net
-if not hasattr(DNS.Type, 'SPF'):
-    # patch in type99 support
-    DNS.Type.SPF = 99
-    DNS.Type.typemap[99] = 'SPF'
-    DNS.Lib.RRunpacker.getSPFdata = DNS.Lib.RRunpacker.getTXTdata
 
-def DNSLookup(name, qtype, strict=True, timeout=20):
+def DNSLookup(name,qtype,strict=True,timeout=30):
+    retVal = []
     try:
-        req = DNS.DnsRequest(name, qtype=qtype, timeout=timeout)
-        resp = req.req()
-        #resp.show()
-        # key k: ('wayforward.net', 'A'), value v
-        # FIXME: pydns returns AAAA RR as 16 byte binary string, but
-        # A RR as dotted quad.  For consistency, this driver should
-        # return both as binary string.
-        #
-        if resp.header['tc'] == True:
-            if strict > 1:
-                raise AmbiguityWarning('DNS: Truncated UDP Reply, SPF records should fit in a UDP packet, retrying TCP')
-            try:
-                req = DNS.DnsRequest(name, qtype=qtype, protocol='tcp', timeout=(timeout))
-                resp = req.req()
-            except DNS.DNSError as x:
-                raise TempError('DNS: TCP Fallback error: ' + str(x))
-            if resp.header['rcode'] != 0 and resp.header['rcode'] != 3:
-                raise IOError('Error: ' + resp.header['status'] + '  RCODE: ' + str(resp.header['rcode']))
-        return [((a['name'], a['typename']), a['data'])
-                for a in resp.answers] \
-             + [((a['name'], a['typename']), a['data'])
-                for a in resp.additional]
-    except AttributeError as x:
+        answers = dns.resolver.query(name, qtype)
+        for rdata in answers:
+            if qtype == 'A' or qtype == 'AAAA':
+                retVal.append(((name, qtype), rdata.address))
+            elif qtype == 'MX':
+                retVal.append(((name, qtype), (rdata.preference, rdata.exchange)))
+            elif qtype == 'PTR':
+                retVal.append(((name, qtype), rdata.target.to_text(True)))
+            elif qtype == 'TXT' or qtype == 'SPF':
+                retVal.append(((name, qtype), rdata.strings))
+    except dns.resolver.NoAnswer:
+        pass
+    except dns.resolver.NXDOMAIN:
+        pass
+    except dns.exception.DNSException as x:
         raise TempError('DNS ' + str(x))
-    except IOError as x:
-        raise TempError('DNS ' + str(x))
-    except DNS.DNSError as x:
-        raise TempError('DNS ' + str(x))
+    return retVal
+
 
 RE_SPF = re.compile(br'^v=spf1$|^v=spf1 ',re.IGNORECASE)
 
@@ -1901,8 +1887,6 @@ else:
 def _test():
     import doctest, spf
     return doctest.testmod(spf)
-
-DNS.DiscoverNameServers() # Fails on Mac OS X? Add domain to /etc/resolv.conf
 
 if __name__ == '__main__':
     import getopt
